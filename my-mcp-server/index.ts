@@ -54,6 +54,109 @@ server.tool(
   }
 );
 
+server.tool(
+  {
+    name: "fetch-github-pr",
+    description: "Fetch GitHub pull request data for readiness assessment",
+    schema: z.object({
+      owner: z.string().describe("The GitHub repository owner (username)"),
+      repo: z.string().describe("The repository name"),
+      prNumber: z.number().describe("The pull request number"),
+    }),
+  },
+  async ({ owner, repo, prNumber }) => {
+    try {
+      const prResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`
+      );
+      const prData: any = await prResponse.json();
+
+      const reviewsResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`
+      );
+      const reviews: any[] = reviewsResponse.ok ? await reviewsResponse.json() : [];
+
+      const checksResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${prData.head.sha}/check-runs`
+      );
+      const checksData: any = checksResponse.ok ? await checksResponse.json() : { check_runs: [] };
+
+      const commentsResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`
+      );
+      const comments: any[] = commentsResponse.ok ? await commentsResponse.json() : [];
+
+      const approvals = reviews.filter((r) => r.state === "APPROVED").length;
+      const requestedReviewers = prData.requested_reviewers?.length || 0;
+      const checkRuns = checksData.check_runs || [];
+      const passingChecks = checkRuns.filter(
+        (c: any) => c.status === "completed" && c.conclusion === "success"
+      ).length;
+      const totalChecks = checkRuns.filter(
+        (c: any) => c.status === "completed"
+      ).length;
+      const hasConflicts = prData.mergeable === false;
+
+      let status: "ready" | "pending" | "not-ready" = "ready";
+      const issues: string[] = [];
+
+      if (hasConflicts) {
+        status = "not-ready";
+        issues.push("Resolve the existing merge conflicts before merging");
+      }
+
+      if (approvals < Math.max(1, requestedReviewers)) {
+        status = status === "ready" ? "pending" : "not-ready";
+        issues.push(`Needs ${Math.max(1, requestedReviewers) - approvals} more approval(s)`);
+      }
+
+      if (totalChecks > 0 && passingChecks < totalChecks) {
+        status = status === "ready" ? "pending" : "not-ready";
+        issues.push(`${totalChecks - passingChecks} check(s) failing`);
+      }
+
+      if (prData.draft) {
+        status = "not-ready";
+        issues.push("PR is still in draft");
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              prNumber,
+              title: prData.title,
+              status,
+              approvals,
+              requestedReviewers,
+              commentsCount: comments.length,
+              checkStatus: {
+                passing: passingChecks,
+                total: totalChecks,
+              },
+              author: prData.user.login,
+              draft: prData.draft,
+              hasConflicts,
+              issues,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error fetching PR data: ${error.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 /*
  * Define MCP resources
  * Docs: https://docs.mcp-use.com/typescript/server/resources
