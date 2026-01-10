@@ -19,6 +19,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["index.ts", "src/**/*", "resources/**/*", "server.ts"],
+  "include": ["index.ts", "src/**/*", "resources/**/*", "server.ts", ".mcp-use/kanban-board/display-weather.tsx"],
   "exclude": ["node_modules", "dist"]
 }

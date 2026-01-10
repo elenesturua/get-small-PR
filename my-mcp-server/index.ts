@@ -61,7 +61,7 @@ server.tool(
     schema: z.object({
       owner: z.string().describe("The GitHub repository owner (username)"),
       repo: z.string().describe("The repository name"),
-      prNumber: z.number().describe("The pull request number"),
+      prNumber: z.number().describe("The pull request number (e.g., if PR URL is .../pull/1, the number is 1)"),
     }),
   },
   async ({ owner, repo, prNumber }) => {
