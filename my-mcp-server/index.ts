@@ -3,26 +3,21 @@ import { z } from "zod";
 
 // Create MCP server instance
 const server = new MCPServer({
-  name: "my-mcp-server",
+  name: "github-pr-readiness",
   version: "1.0.0",
-  description: "My first MCP server with all features",
-  baseUrl: process.env.MCP_URL || "http://localhost:3000", // Full base URL (e.g., https://myserver.com)
-  // favicon: "favicon.ico", // Uncomment and add your favicon to public/ folder
+  description: "GitHub PR readiness assessment with interactive UI widget",
+  baseUrl: process.env.MCP_URL || "http://localhost:3000",
 });
 
 /**
  * Define UI Widgets
- * All React components in the `resources/` folder
- * are automatically registered as MCP tools and resources.
+ * React components in the `resources/` folder are automatically registered as MCP tools and resources.
  *
- * Just export widgetMetadata with description and Zod schema,
- * and mcp-use handles the rest!
+ * Just export widgetMetadata with description and Zod schema, and mcp-use handles the rest!
  *
- * It will automatically add to your MCP server:
- * - server.tool('kanban-board')
- * - server.tool('display-weather')
- * - server.resource('ui://widget/kanban-board')
- * - server.resource('ui://widget/display-weather')
+ * This server includes:
+ * - server.tool('pr-readiness')
+ * - server.resource('ui://widget/pr-readiness')
  *
  * Docs: https://docs.mcp-use.com/typescript/server/ui-widgets
  */
@@ -33,35 +28,12 @@ const server = new MCPServer({
  */
 server.tool(
   {
-    name: "fetch-weather",
-    description: "Fetch the weather for a city",
-    schema: z.object({
-      city: z.string().describe("The city to fetch the weather for"),
-    }),
-  },
-  async ({ city }) => {
-    const response = await fetch(`https://wttr.in/${city}?format=j1`);
-    const data: any = await response.json();
-    const current = data.current_condition[0];
-    return {
-      content: [
-        {
-          type: "text",
-          text: `The weather in ${city} is ${current.weatherDesc[0].value}. Temperature: ${current.temp_C}°C, Humidity: ${current.humidity}%`,
-        },
-      ],
-    };
-  }
-);
-
-server.tool(
-  {
     name: "fetch-github-pr",
     description: "Fetch GitHub pull request data for readiness assessment",
     schema: z.object({
       owner: z.string().describe("The GitHub repository owner (username)"),
       repo: z.string().describe("The repository name"),
-      prNumber: z.number().describe("The pull request number (e.g., if PR URL is .../pull/1, the number is 1)"),
+      prNumber: z.number().describe("The pull request number"),
     }),
   },
   async ({ owner, repo, prNumber }) => {
@@ -86,17 +58,32 @@ server.tool(
       );
       const comments: any[] = commentsResponse.ok ? await commentsResponse.json() : [];
 
-      const approvals = reviews.filter((r) => r.state === "APPROVED").length;
-      const requestedReviewers = prData.requested_reviewers?.length || 0;
-      const checkRuns = checksData.check_runs || [];
-      const passingChecks = checkRuns.filter(
-        (c: any) => c.status === "completed" && c.conclusion === "success"
-      ).length;
-      const totalChecks = checkRuns.filter(
-        (c: any) => c.status === "completed"
-      ).length;
-      const hasConflicts = prData.mergeable === false;
+      // Fetch PR files to get top files
+      const filesResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files`
+      );
+      const filesData: any[] = filesResponse.ok ? await filesResponse.json() : [];
 
+      const approvals = reviews.filter((r) => r.state === "APPROVED").length;
+      const requestedReviewersList = prData.requested_reviewers?.map((r: any) => r.login) || [];
+      const requiredApprovals = Math.max(1, prData.requested_reviewers?.length || 1);
+      
+      const checkRuns = checksData.check_runs || [];
+      const checks = checkRuns.map((c: any) => ({
+        name: c.name || c.conclusion || "Check",
+        state: (c.conclusion === "success" ? "success" : 
+               c.conclusion === "failure" ? "failure" : 
+               c.conclusion === "cancelled" ? "error" : 
+               "pending") as "success" | "failure" | "pending" | "error"
+      }));
+
+      const hasConflicts = prData.mergeable === false;
+      const additions = prData.additions || 0;
+      const deletions = prData.deletions || 0;
+      const changedFilesCount = prData.changed_files || 0;
+      const topFiles = filesData.slice(0, 5).map((f: any) => f.filename);
+
+      // Calculate status
       let status: "ready" | "pending" | "not-ready" = "ready";
       const issues: string[] = [];
 
@@ -105,14 +92,15 @@ server.tool(
         issues.push("Resolve the existing merge conflicts before merging");
       }
 
-      if (approvals < Math.max(1, requestedReviewers)) {
+      if (approvals < requiredApprovals) {
         status = status === "ready" ? "pending" : "not-ready";
-        issues.push(`Needs ${Math.max(1, requestedReviewers) - approvals} more approval(s)`);
+        issues.push(`Needs ${requiredApprovals - approvals} more approval(s)`);
       }
 
-      if (totalChecks > 0 && passingChecks < totalChecks) {
+      const failingChecks = checks.filter((c: { name: string; state: string }) => c.state === "failure" || c.state === "error");
+      if (failingChecks.length > 0) {
         status = status === "ready" ? "pending" : "not-ready";
-        issues.push(`${totalChecks - passingChecks} check(s) failing`);
+        issues.push(`${failingChecks.length} check(s) failing`);
       }
 
       if (prData.draft) {
@@ -125,20 +113,25 @@ server.tool(
           {
             type: "text",
             text: JSON.stringify({
+              owner,
+              repo,
               prNumber,
               title: prData.title,
+              author: prData.user.login,
+              prUrl: prData.html_url,
               status,
               approvals,
-              requestedReviewers,
-              commentsCount: comments.length,
-              checkStatus: {
-                passing: passingChecks,
-                total: totalChecks,
-              },
-              author: prData.user.login,
-              draft: prData.draft,
-              hasConflicts,
-              issues,
+              requiredApprovals,
+              requestedReviewers: requestedReviewersList,
+              checks: checks.length > 0 ? checks : undefined,
+              changedFilesCount,
+              additions,
+              deletions,
+              topFiles: topFiles.length > 0 ? topFiles : undefined,
+              draft: prData.draft || false,
+              mergeable: prData.mergeable,
+              updatedAt: prData.updated_at,
+              issues: issues.length > 0 ? issues : undefined,
             }, null, 2),
           },
         ],
