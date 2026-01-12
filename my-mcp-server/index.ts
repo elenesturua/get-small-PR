@@ -87,25 +87,35 @@ server.tool(
       let status: "ready" | "pending" | "not-ready" = "ready";
       const issues: string[] = [];
 
-      if (hasConflicts) {
-        status = "not-ready";
-        issues.push("Resolve the existing merge conflicts before merging");
+      // Check if PR is already merged
+      if (prData.merged === true) {
+        status = "ready";
+        // Don't add any issues for merged PRs
+      } else {
+        // Only check these conditions if PR is not merged
+        if (hasConflicts) {
+          status = "not-ready";
+          issues.push("Resolve the existing merge conflicts before merging");
+        }
+
+        if (approvals < requiredApprovals) {
+          status = status === "ready" ? "pending" : "not-ready";
+          issues.push(`Needs ${requiredApprovals - approvals} more approval(s)`);
+        }
       }
 
-      if (approvals < requiredApprovals) {
-        status = status === "ready" ? "pending" : "not-ready";
-        issues.push(`Needs ${requiredApprovals - approvals} more approval(s)`);
-      }
+      // Only check failing checks and draft status if not merged
+      if (prData.merged !== true) {
+        const failingChecks = checks.filter((c: { name: string; state: string }) => c.state === "failure" || c.state === "error");
+        if (failingChecks.length > 0) {
+          status = status === "ready" ? "pending" : "not-ready";
+          issues.push(`${failingChecks.length} check(s) failing`);
+        }
 
-      const failingChecks = checks.filter((c: { name: string; state: string }) => c.state === "failure" || c.state === "error");
-      if (failingChecks.length > 0) {
-        status = status === "ready" ? "pending" : "not-ready";
-        issues.push(`${failingChecks.length} check(s) failing`);
-      }
-
-      if (prData.draft) {
-        status = "not-ready";
-        issues.push("PR is still in draft");
+        if (prData.draft) {
+          status = "not-ready";
+          issues.push("PR is still in draft");
+        }
       }
 
       return {
