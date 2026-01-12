@@ -5,6 +5,7 @@ import "./styles.css";
 
 /*
  * Apps SDK widget - PR Readiness Dashboard
+ * Displays GitHub Pull Request readiness with status, checks, and actionable insights
  */
 
 const checkSchema = z.object({
